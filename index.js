@@ -1,5 +1,14 @@
 require('dotenv').config();
-const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder } = require('discord.js');
+const {
+    Client,
+    GatewayIntentBits,
+    REST,
+    Routes,
+    SlashCommandBuilder,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle
+} = require('discord.js');
 const { joinVoiceChannel } = require('@discordjs/voice');
 const { saveStudyTime, getSettings } = require('./settings');
 
@@ -12,9 +21,11 @@ const client = new Client({
     ]
 });
 
+let guildInfo = getSettings();
 let studyTimes = {};
 const activeSessions = {};
 const sessionMonitors = {};
+const interactionRecords = {}; // 🆕 Track initial interaction to edit later
 
 client.once('ready', async () => {
     console.log(`✅ Logged in as ${client.user.tag}`);
@@ -23,6 +34,40 @@ client.once('ready', async () => {
 });
 
 client.on('interactionCreate', async (interaction) => {
+    if (interaction.isButton()) {
+        const [action, userId] = interaction.customId.split(':');
+        const guildId = interaction.guildId;
+
+        if (action === 'leave' && interaction.user.id === userId) {
+            const studyData = studyTimes[guildId]?.[userId];
+            if (studyData) {
+                clearInterval(studyData.interval);
+                saveStudyTime(guildId, userId, studyData.studyTime);
+                activeSessions[guildId]?.delete(userId);
+                delete studyTimes[guildId][userId];
+
+                // Convert seconds to h m s
+                const h = Math.floor(studyData.studyTime / 3600);
+                const m = Math.floor((studyData.studyTime % 3600) / 60);
+                const s = studyData.studyTime % 60;
+                const formattedTime = `${h > 0 ? `${h}h ` : ''}${m}m ${s}s`;
+
+                const oldReply = interactionRecords[guildId]?.[userId];
+                if (oldReply) {
+                    await oldReply.edit({
+                        content: `👋 You have left the study session after ${formattedTime}.`,
+                        components: []
+                    });
+                }
+
+                await interaction.deferUpdate(); // No reply needed
+            } else {
+                await interaction.reply({ content: `❌ You're not in a tracked session.`, ephemeral: true });
+            }
+        }
+        return;
+    }
+
     if (!interaction.isCommand()) return;
     const guildId = interaction.guild.id;
 
@@ -36,17 +81,13 @@ client.on('interactionCreate', async (interaction) => {
 
         if (!studyTimes[guildId]) studyTimes[guildId] = {};
         if (!activeSessions[guildId]) activeSessions[guildId] = new Set();
+        if (!interactionRecords[guildId]) interactionRecords[guildId] = {};
+
+        const isNewSession = !studyTimes[guildId][member.id];
 
         if (!studyTimes[guildId][member.id]) {
-            console.log(studyTimes);
-            console.log(studyTimes[guildId][member.id]);
-            console.log('didnt find so its now zero');
             studyTimes[guildId][member.id] = { studyTime: 0, interval: null, connection: null };
-        } else {
-            console.log(studyTimes);
-            console.log('found it');
         }
-
 
         const studyData = studyTimes[guildId][member.id];
         studyData.connection = joinVoiceChannel({
@@ -57,7 +98,6 @@ client.on('interactionCreate', async (interaction) => {
 
         studyData.interval = setInterval(() => {
             studyData.studyTime += 1;
-            console.log(studyData.studyTime);
         }, 1000);
 
         activeSessions[guildId].add(member.id);
@@ -65,7 +105,7 @@ client.on('interactionCreate', async (interaction) => {
         if (!sessionMonitors[guildId]) {
             const expectedChannelId = voiceChannel.id;
 
-            sessionMonitors[guildId] = setInterval(() => {
+            sessionMonitors[guildId] = setInterval(async () => {
                 const botVC = interaction.guild.members.me.voice.channel;
                 const stillValid = botVC && botVC.id === expectedChannelId;
 
@@ -73,29 +113,37 @@ client.on('interactionCreate', async (interaction) => {
                     activeSessions[guildId]?.has(member.id)
                 ) || new Map();
 
-                console.log(usersInVC.size);
-
-                // Remove users who are no longer in VC
                 const trackedUsers = Object.keys(studyTimes[guildId] || {});
-                trackedUsers.forEach(userId => {
-                    console.log(usersInVC.has(userId));
+                for (const userId of trackedUsers) {
                     const stillInVC = usersInVC.has(userId);
                     if (!stillInVC) {
                         const data = studyTimes[guildId][userId];
                         if (data) {
                             clearInterval(data.interval);
                             saveStudyTime(guildId, userId, data.studyTime);
-                            console.log(`👋 Removed ${userId}, saved ${data.studyTime}s`);
+
+                            // Format time
+                            const h = Math.floor(data.studyTime / 3600);
+                            const m = Math.floor((data.studyTime % 3600) / 60);
+                            const s = data.studyTime % 60;
+                            const formattedTime = `${h > 0 ? `${h}h ` : ''}${m}m ${s}s`;
+
+                            // Update reply if exists
+                            const oldReply = interactionRecords[guildId]?.[userId];
+                            if (oldReply) {
+                                await oldReply.edit({
+                                    content: `👋 You have left the study session after ${formattedTime}.`,
+                                    components: []
+                                });
+                            }
+
                             delete studyTimes[guildId][userId];
                         }
-
                         activeSessions[guildId]?.delete(userId);
                     }
-                });
+                }
 
-                // End session if no users left
                 if (!stillValid || usersInVC.size === 0) {
-                    console.log("end session nobody in call");
                     clearInterval(sessionMonitors[guildId]);
                     delete sessionMonitors[guildId];
 
@@ -109,10 +157,23 @@ client.on('interactionCreate', async (interaction) => {
                     studyData.connection.destroy();
                     activeSessions[guildId]?.clear();
                 }
-            }, 5000); // Monitor every 5 seconds
+            }, 5000);
         }
 
-        await interaction.reply(`Started tracking your study time in ${voiceChannel.name}`);
+        const leaveButton = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId(`leave:${member.id}`)
+                .setLabel('Leave the session')
+                .setStyle(ButtonStyle.Danger)
+        );
+
+        const reply = await interaction.reply({
+            content: `✅ Started tracking your study time in **${voiceChannel.name}**.`,
+            components: [leaveButton],
+            fetchReply: true
+        });
+
+        interactionRecords[guildId][member.id] = reply;
     }
 
     if (interaction.commandName === 'pomodoro') {
@@ -136,7 +197,7 @@ client.on('interactionCreate', async (interaction) => {
 
     if (interaction.commandName === 'mystats') {
         const member = interaction.member;
-        const studyData = studyTimes[guildId]?.[member.id] || { studyTime: 0 };
+        const studyData = guildInfo[guildId]?.[member.id] || { studyTime: 0 };
 
         const hours = Math.floor(studyData.studyTime / 3600);
         const minutes = Math.floor((studyData.studyTime % 3600) / 60);
@@ -146,8 +207,8 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     if (interaction.commandName === 'leaderboards') {
-        const leaderboard = Object.keys(studyTimes[guildId] || {}).map(userId => {
-            const studyData = studyTimes[guildId][userId];
+        const leaderboard = Object.keys(guildInfo[guildId] || {}).map(userId => {
+            const studyData = guildInfo[guildId][userId];
             const hours = Math.floor(studyData.studyTime / 3600);
             const minutes = Math.floor((studyData.studyTime % 3600) / 60);
             const seconds = studyData.studyTime % 60;
@@ -171,18 +232,10 @@ client.on('interactionCreate', async (interaction) => {
 
 async function registerSlashCommands() {
     const commands = [
-        new SlashCommandBuilder()
-            .setName('study')
-            .setDescription('Start tracking study time in a voice channel'),
-        new SlashCommandBuilder()
-            .setName('pomodoro')
-            .setDescription('Start a Pomodoro session for studying'),
-        new SlashCommandBuilder()
-            .setName('mystats')
-            .setDescription('View your own study time stats'),
-        new SlashCommandBuilder()
-            .setName('leaderboards')
-            .setDescription('View the leaderboard of total study time')
+        new SlashCommandBuilder().setName('study').setDescription('Start tracking study time in a voice channel'),
+        new SlashCommandBuilder().setName('pomodoro').setDescription('Start a Pomodoro session for studying'),
+        new SlashCommandBuilder().setName('mystats').setDescription('View your own study time stats'),
+        new SlashCommandBuilder().setName('leaderboards').setDescription('View the leaderboard of total study time')
     ].map(command => command.toJSON());
 
     const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
