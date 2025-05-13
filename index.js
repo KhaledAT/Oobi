@@ -203,6 +203,7 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     if (interaction.commandName === 'pomodoro') {
+        const guildId = interaction.guild.id;
         const member = interaction.member;
         const voiceChannel = member.voice.channel;
         const botVC = interaction.guild.members.me.voice.channel;
@@ -215,8 +216,8 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ content: '❌ You must be in the same voice channel as the bot to start a Pomodoro.' });
         }
 
-        const workTime = parseInt(interaction.options.getInteger('work')) || 25;
-        const breakTime = parseInt(interaction.options.getInteger('break')) || 5;
+        const workTime = interaction.options.getInteger('work');
+        const breakTime = interaction.options.getInteger('break');
 
         if (pomodoroTimers[guildId]) {
             clearInterval(pomodoroTimers[guildId].interval);
@@ -227,23 +228,37 @@ client.on('interactionCreate', async (interaction) => {
         let mode = 'work';
         let minutesLeft = workTime;
 
-        const reply = await interaction.reply({
-            content: `⏳ Pomodoro started: **${workTime} min work** + **${breakTime} min break**\nElapsed: 0 min\nCurrent mode: 🧠 Work`,
-            fetchReply: true
+        await interaction.reply({
+            content: `⏳ Pomodoro started: **${workTime} min work** + **${breakTime} min break**\nElapsed: 0 min\nCurrent mode: 🧠 Work`
         });
+
+        const replyMessage = await interaction.fetchReply();
 
         const updateMessage = async () => {
             totalElapsed++;
-            minutesLeft--;
+            const stillStudying = !studyTimes[guildId];
 
-            await interaction.editReply({
-                content: `⏳ Pomodoro ongoing: **${workTime} min work** + **${breakTime} min break**\nElapsed: ${totalElapsed} min\nCurrent mode: ${mode === 'work' ? '🧠 Work' : '☕ Break'} (${minutesLeft} min left)`
-            });
+            if (!botVC || botVC.id !== voiceChannel.id || !stillStudying) {
+                await replyMessage.edit({
+                    content: `⏳ Pomodoro session ended !`
+                });
+            } else {
+                await replyMessage.edit({
+                    content: `⏳ Pomodoro ongoing: **${workTime} min work** + **${breakTime} min break**\nElapsed: ${totalElapsed} min\nCurrent mode: ${mode === 'work' ? '🧠 Work' : '☕ Break'} (${minutesLeft} min left)`
+                });
+            }
         };
 
         const startCycle = async () => {
             const stillInVC = interaction.guild.members.me.voice.channel?.id === voiceChannel.id;
-            if (!stillInVC) return;
+            const stillStudying = !!studyTimes[guildId];
+
+            if (!stillInVC || !stillStudying) {
+                clearInterval(pomodoroTimers[guildId].interval);
+                clearTimeout(pomodoroTimers[guildId].timeout);
+                delete pomodoroTimers[guildId];
+                return;
+            }
 
             await playSoundInChannel(voiceChannel);
 
@@ -252,26 +267,37 @@ client.on('interactionCreate', async (interaction) => {
                 timeout: setTimeout(async function cycleEnd() {
                     clearInterval(pomodoroTimers[guildId].interval);
 
-                    // Switch modes
-                    mode = mode === 'work' ? 'break' : 'work';
-                    minutesLeft = mode === 'work' ? workTime : breakTime;
+                    // Check again before switching mode and continuing
+                    const botVC = interaction.guild.members.me.voice.channel;
+                    const stillStudying = !!studyTimes[guildId];
 
-                    // Update message once immediately after switch
-                    await interaction.editReply({
-                        content: `⏳ Pomodoro ongoing: **${workTime} min work** + **${breakTime} min break**\nElapsed: ${totalElapsed} min\nCurrent mode: ${mode === 'work' ? '🧠 Work' : '☕ Break'} (${minutesLeft} min left)`
-                    });
+                    if (!botVC || botVC.id !== voiceChannel.id || !stillStudying) {
+                        clearTimeout(pomodoroTimers[guildId].timeout);
+                        delete pomodoroTimers[guildId];
+                    } else {
+                        // Switch mode
+                        mode = mode === 'work' ? 'break' : 'work';
+                        minutesLeft = mode === 'work' ? workTime : breakTime;
 
-                    await playSoundInChannel(voiceChannel);
+                        await replyMessage.edit({
+                            content: `⏳ Pomodoro ongoing: **${workTime} min work** + **${breakTime} min break**\nElapsed: ${totalElapsed} min\nCurrent mode: ${mode === 'work' ? '🧠 Work' : '☕ Break'} (${minutesLeft} min left)`
+                        });
 
-                    // Restart next cycle
-                    startCycle();
+                        console.log(!botVC)
+                        console.log(botVC.id)
+                        console.log(stillStudying)
+
+                        await playSoundInChannel(voiceChannel);
+
+                        // Start next cycle
+                        startCycle();
+                    }
                 }, minutesLeft * 60 * 1000)
             };
         };
 
         startCycle();
     }
-
 
     if (interaction.commandName === 'mystats') {
         const member = interaction.member;

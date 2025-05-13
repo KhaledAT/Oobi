@@ -1,0 +1,45 @@
+name: Deploy Discord Bot
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    env:
+      DOTENV_CONTENT: ${{ secrets.DOTENV_CONTENT }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Add remote host to known hosts
+        run: |
+          ssh-keyscan -H 168.138.75.100 >> ~/.ssh/known_hosts
+
+      - name: Deploy via SSH
+        run: |
+          ssh -i ~/.ssh/id_rsa opc@168.138.75.100 << EOF
+          
+            # Ensure correct directory
+            cd /home/opc/study-bot/Oobi
+          
+            # Recreate the .env file from secret
+            echo "$DOTENV_CONTENT" > .env
+          
+            git fetch
+            git pull origin
+            npm install
+            pm2 restart index.js || pm2 start index.js
+          EOF
