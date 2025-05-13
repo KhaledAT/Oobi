@@ -25,7 +25,7 @@ let guildInfo = getSettings();
 let studyTimes = {};
 const activeSessions = {};
 const sessionMonitors = {};
-const interactionRecords = {}; // 🆕 Track initial interaction to edit later
+const interactionRecords = {};
 
 client.once('ready', async () => {
     console.log(`✅ Logged in as ${client.user.tag}`);
@@ -46,7 +46,6 @@ client.on('interactionCreate', async (interaction) => {
                 activeSessions[guildId]?.delete(userId);
                 delete studyTimes[guildId][userId];
 
-                // Convert seconds to h m s
                 const h = Math.floor(studyData.studyTime / 3600);
                 const m = Math.floor((studyData.studyTime % 3600) / 60);
                 const s = studyData.studyTime % 60;
@@ -60,9 +59,9 @@ client.on('interactionCreate', async (interaction) => {
                     });
                 }
 
-                await interaction.deferUpdate(); // No reply needed
+                await interaction.deferUpdate();
             } else {
-                await interaction.reply({ content: `❌ You're not in a tracked session.`, ephemeral: true });
+                await interaction.reply({ content: `❌ You're not in a tracked session.` });
             }
         }
         return;
@@ -77,6 +76,14 @@ client.on('interactionCreate', async (interaction) => {
 
         if (!voiceChannel) {
             return interaction.reply('You need to be in a voice channel to start studying!');
+        }
+
+        // 🆕 Check if bot is already in another voice channel in this guild
+        const botVC = interaction.guild.members.me.voice.channel;
+        if (botVC && botVC.id !== voiceChannel.id) {
+            return interaction.reply({
+                content: `🎓 A study session is already ongoing in another voice channel. Please join that session to be tracked.`
+            });
         }
 
         if (!studyTimes[guildId]) studyTimes[guildId] = {};
@@ -122,13 +129,11 @@ client.on('interactionCreate', async (interaction) => {
                             clearInterval(data.interval);
                             saveStudyTime(guildId, userId, data.studyTime);
 
-                            // Format time
                             const h = Math.floor(data.studyTime / 3600);
                             const m = Math.floor((data.studyTime % 3600) / 60);
                             const s = data.studyTime % 60;
                             const formattedTime = `${h > 0 ? `${h}h ` : ''}${m}m ${s}s`;
 
-                            // Update reply if exists
                             const oldReply = interactionRecords[guildId]?.[userId];
                             if (oldReply) {
                                 await oldReply.edit({
