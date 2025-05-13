@@ -9,8 +9,9 @@ const {
     ButtonBuilder,
     ButtonStyle
 } = require('discord.js');
-const { joinVoiceChannel } = require('@discordjs/voice');
+const { joinVoiceChannel, createAudioPlayer, createAudioResource} = require('@discordjs/voice');
 const { saveStudyTime, getSettings } = require('./settings');
+const {join} = require("node:path");
 
 const client = new Client({
     intents: [
@@ -26,6 +27,30 @@ let studyTimes = {};
 const activeSessions = {};
 const sessionMonitors = {};
 const interactionRecords = {};
+const pomodoroTimers = {};
+
+// --- PLAY SOUND FUNCTION ---
+async function playSoundInChannel(voiceChannel) {
+    if (!voiceChannel) return;
+
+    const connection = joinVoiceChannel({
+        channelId: voiceChannel.id,
+        guildId: voiceChannel.guild.id,
+        adapterCreator: voiceChannel.guild.voiceAdapterCreator
+    });
+
+    const player = createAudioPlayer();
+    const fileName = 'notification1.mp3';
+    const resource = createAudioResource(join(__dirname, 'public', 'sounds', fileName));
+
+    connection.subscribe(player);
+    player.play(resource);
+
+    const timeout = setTimeout(() => {
+        player.stop()
+    }, 195 * 1000);
+    clearTimeout(timeout);
+}
 
 client.once('ready', async () => {
     console.log(`✅ Logged in as ${client.user.tag}`);
@@ -179,22 +204,74 @@ client.on('interactionCreate', async (interaction) => {
 
     if (interaction.commandName === 'pomodoro') {
         const member = interaction.member;
-        const { studyTime } = studyTimes[guildId]?.[member.id] || { studyTime: 0 };
-        const studyDuration = 25 * 60;
-        const breakDuration = 5 * 60;
+        const voiceChannel = member.voice.channel;
+        const botVC = interaction.guild.members.me.voice.channel;
 
-        if (studyTime > 0) {
-            setTimeout(() => {
-                interaction.followUp('Pomodoro session completed! Take a 5-minute break.');
-            }, studyDuration * 1000);
+        if (!botVC || !botVC.id || !studyTimes[guildId]) {
+            return interaction.reply({ content: '❌ The bot is not in a study session or not in a voice channel.' });
         }
 
-        setTimeout(() => {
-            interaction.followUp('Break time is over! Get back to studying.');
-        }, (studyDuration + breakDuration) * 1000);
+        if (!botVC || botVC.id !== voiceChannel?.id) {
+            return interaction.reply({ content: '❌ You must be in the same voice channel as the bot to start a Pomodoro.' });
+        }
 
-        await interaction.reply(`Pomodoro timer started! Work for 25 minutes, then take a 5-minute break.`);
+        const workTime = parseInt(interaction.options.getInteger('work')) || 25;
+        const breakTime = parseInt(interaction.options.getInteger('break')) || 5;
+
+        if (pomodoroTimers[guildId]) {
+            clearInterval(pomodoroTimers[guildId].interval);
+            clearTimeout(pomodoroTimers[guildId].timeout);
+        }
+
+        let totalElapsed = 0;
+        let mode = 'work';
+        let minutesLeft = workTime;
+
+        const reply = await interaction.reply({
+            content: `⏳ Pomodoro started: **${workTime} min work** + **${breakTime} min break**\nElapsed: 0 min\nCurrent mode: 🧠 Work`,
+            fetchReply: true
+        });
+
+        const updateMessage = async () => {
+            totalElapsed++;
+            minutesLeft--;
+
+            await interaction.editReply({
+                content: `⏳ Pomodoro ongoing: **${workTime} min work** + **${breakTime} min break**\nElapsed: ${totalElapsed} min\nCurrent mode: ${mode === 'work' ? '🧠 Work' : '☕ Break'} (${minutesLeft} min left)`
+            });
+        };
+
+        const startCycle = async () => {
+            const stillInVC = interaction.guild.members.me.voice.channel?.id === voiceChannel.id;
+            if (!stillInVC) return;
+
+            await playSoundInChannel(voiceChannel);
+
+            pomodoroTimers[guildId] = {
+                interval: setInterval(updateMessage, 60 * 1000),
+                timeout: setTimeout(async function cycleEnd() {
+                    clearInterval(pomodoroTimers[guildId].interval);
+
+                    // Switch modes
+                    mode = mode === 'work' ? 'break' : 'work';
+                    minutesLeft = mode === 'work' ? workTime : breakTime;
+
+                    // Update message once immediately after switch
+                    await interaction.editReply({
+                        content: `⏳ Pomodoro ongoing: **${workTime} min work** + **${breakTime} min break**\nElapsed: ${totalElapsed} min\nCurrent mode: ${mode === 'work' ? '🧠 Work' : '☕ Break'} (${minutesLeft} min left)`
+                    });
+
+                    await playSoundInChannel(voiceChannel);
+
+                    // Restart next cycle
+                    startCycle();
+                }, minutesLeft * 60 * 1000)
+            };
+        };
+
+        startCycle();
     }
+
 
     if (interaction.commandName === 'mystats') {
         const member = interaction.member;
@@ -233,10 +310,28 @@ client.on('interactionCreate', async (interaction) => {
 
 async function registerSlashCommands() {
     const commands = [
-        new SlashCommandBuilder().setName('study').setDescription('Start tracking study time in a voice channel'),
-        new SlashCommandBuilder().setName('pomodoro').setDescription('Start a Pomodoro session for studying'),
-        new SlashCommandBuilder().setName('mystats').setDescription('View your own study time stats'),
-        new SlashCommandBuilder().setName('leaderboards').setDescription('View the leaderboard of total study time')
+        new SlashCommandBuilder()
+            .setName('study')
+            .setDescription('Start tracking study time in a voice channel'),
+        new SlashCommandBuilder()
+            .setName('pomodoro')
+            .setDescription('Start a Pomodoro session for studying')
+            .addIntegerOption(opt =>
+                opt.setName('work')
+                    .setDescription('Work duration in minutes')
+                    .setRequired(true)
+            )
+            .addIntegerOption(opt =>
+                opt.setName('break')
+                    .setDescription('Break duration in minutes')
+                    .setRequired(true)
+            ),
+        new SlashCommandBuilder()
+            .setName('mystats')
+            .setDescription('View your own study time stats'),
+        new SlashCommandBuilder()
+            .setName('leaderboards')
+            .setDescription('View the leaderboard of total study time')
     ].map(command => command.toJSON());
 
     const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
