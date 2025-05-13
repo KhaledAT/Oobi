@@ -78,7 +78,6 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply('You need to be in a voice channel to start studying!');
         }
 
-        // 🆕 Check if bot is already in another voice channel in this guild
         const botVC = interaction.guild.members.me.voice.channel;
         if (botVC && botVC.id !== voiceChannel.id) {
             return interaction.reply({
@@ -89,8 +88,6 @@ client.on('interactionCreate', async (interaction) => {
         if (!studyTimes[guildId]) studyTimes[guildId] = {};
         if (!activeSessions[guildId]) activeSessions[guildId] = new Set();
         if (!interactionRecords[guildId]) interactionRecords[guildId] = {};
-
-        const isNewSession = !studyTimes[guildId][member.id];
 
         if (!studyTimes[guildId][member.id]) {
             studyTimes[guildId][member.id] = { studyTime: 0, interval: null, connection: null };
@@ -172,13 +169,12 @@ client.on('interactionCreate', async (interaction) => {
                 .setStyle(ButtonStyle.Danger)
         );
 
-        const reply = await interaction.reply({
+        await interaction.reply({
             content: `✅ Started tracking your study time in **${voiceChannel.name}**.`,
-            components: [leaveButton],
-            fetchReply: true
+            components: [leaveButton]
         });
 
-        interactionRecords[guildId][member.id] = reply;
+        interactionRecords[guildId][member.id] = await interaction.fetchReply();
     }
 
     if (interaction.commandName === 'pomodoro') {
